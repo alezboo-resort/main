@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>AllezBoo — Hệ thống Quản lý Mua hàng v2</title>
+<title>AllezBoo — Hệ thống Quản lý Mua hàng</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
@@ -417,6 +417,17 @@ tr.overdue-row td{background:var(--red-50)!important;}
       <span class="role-chip" onclick="quickRole('purchase')">Purchase</span>
       <span class="role-chip" onclick="quickRole('user')">User</span>
     </div>
+    <!-- GSheets status on login -->
+    <div id="login-gs-status" style="margin-top:16px;padding:10px 14px;border-radius:var(--r);font-size:12px;text-align:center;"></div>
+    <button onclick="showConnectModal()" 
+      style="width:100%;margin-top:8px;padding:9px;background:transparent;
+             border:1.5px dashed var(--slate-300);border-radius:var(--r);
+             font-size:12px;color:var(--slate-500);cursor:pointer;
+             transition:all .2s;font-family:var(--font);"
+      onmouseover="this.style.borderColor='var(--blue-400)';this.style.color='var(--blue-600)'"
+      onmouseout="this.style.borderColor='var(--slate-300)';this.style.color='var(--slate-500)'">
+      🔗 Kết nối Google Sheets để lưu dữ liệu thực
+    </button>
   </div>
 </div>
 
@@ -1016,32 +1027,49 @@ window.onerror = function(msg, src, line, col, err){
 window.onunhandledrejection = function(e){
   console.error('Unhandled Promise rejection:', e.reason);
 };
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyCp53BXdb655O3G3frrox1lqKAi7Y2WnkLAJ7G1HPueJ2fhxFaXXs_5kBloyVWDaMJ/exec'; // ← Dán Web App URL sau khi deploy
-
 /* ═══════════════════════════════════════════════
-   API LAYER — Kết nối Google Apps Script
+   API LAYER — Google Apps Script (GET, no CORS)
+   Apps Script không hỗ trợ CORS preflight (OPTIONS).
+   Giải pháp: dùng GET + encode payload vào URL param.
 ═══════════════════════════════════════════════ */
-let AUTH_TOKEN   = localStorage.getItem('ab_token') || '';
-let API_MODE     = APPS_SCRIPT_URL ? 'live' : 'demo'; // 'live' hoặc 'demo'
 
-async function api(action, body={}, method='POST') {
+// Lấy URL đã lưu từ lần trước (hoặc rỗng = demo mode)
+function getScriptUrl() {
+  return localStorage.getItem('ab_script_url') || '';
+}
+function setScriptUrl(url) {
+  localStorage.setItem('ab_script_url', url);
+}
+
+let AUTH_TOKEN = localStorage.getItem('ab_token') || '';
+let API_MODE   = getScriptUrl() ? 'live' : 'demo';
+
+async function api(action, body={}) {
   if (API_MODE === 'demo') return demoFallback(action, body);
-  const url = APPS_SCRIPT_URL;
-  const opts = {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({action, token: AUTH_TOKEN, ...body}),
-  };
+
+  const scriptUrl = getScriptUrl();
+  if (!scriptUrl) { API_MODE='demo'; return demoFallback(action, body); }
+
+  // Encode toàn bộ body vào 1 param "payload" để tránh giới hạn tên param
+  const params = new URLSearchParams({
+    action,
+    token:   AUTH_TOKEN,
+    payload: encodeURIComponent(JSON.stringify(body)),
+  });
+  const url = scriptUrl + (scriptUrl.includes('?') ? '&' : '?') + params.toString();
+
   try {
-    const res = await fetch(url, opts);
+    const res  = await fetch(url);           // GET, không có preflight
     const data = await res.json();
-    if (!data.ok && data.error === 'Unauthorized — token không hợp lệ hoặc hết hạn') {
-      doLogout(); showToast('Phiên đăng nhập hết hạn, vui lòng đăng nhập lại','warn'); return null;
+    if (!data.ok && data.error && data.error.includes('hết hạn')) {
+      doLogout();
+      showToast('⏳ Phiên đăng nhập hết hạn, vui lòng đăng nhập lại','warn');
+      return null;
     }
     return data;
   } catch(err) {
     console.error('API Error:', err);
-    showToast('⚠ Lỗi kết nối server: ' + err.message, 'error');
+    showToast('⚠ Lỗi kết nối: ' + err.message, 'error');
     return null;
   }
 }
@@ -1121,33 +1149,114 @@ function demoFallback(action, body) {
 function renderConnectionBanner(){
   const existing = document.getElementById('conn-banner');
   if(existing) existing.remove();
-  if(API_MODE==='demo'){
-    const b=document.createElement('div');
-    b.id='conn-banner';
-    b.innerHTML=`<span>⚡ Chế độ Demo — Dữ liệu lưu tạm, chưa kết nối Google Sheets.</span>
-      <button onclick="openGSheetsSetup()" style="background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;padding:3px 12px;border-radius:99px;font-size:11px;cursor:pointer;margin-left:10px;">⚙ Kết nối GSheets</button>
-      <button onclick="this.parentNode.remove()" style="background:none;border:none;color:rgba(255,255,255,.7);cursor:pointer;margin-left:6px;font-size:16px;line-height:1;">✕</button>`;
-    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:999;background:var(--amber-600);color:#fff;padding:8px 20px;font-size:12px;display:flex;align-items:center;justify-content:center;gap:4px;';
-    document.body.prepend(b);
-    // Push app down
-    const app=document.getElementById('app');
-    if(app) app.style.paddingTop='36px';
+  const b = document.createElement('div');
+  b.id = 'conn-banner';
+  if(API_MODE === 'demo'){
+    b.innerHTML = `
+      <span>⚡ Chế độ Demo — chưa kết nối Google Sheets.</span>
+      <button onclick="showConnectModal()"
+        style="background:rgba(255,255,255,.25);border:1px solid rgba(255,255,255,.5);
+               color:#fff;padding:3px 14px;border-radius:99px;font-size:11px;
+               cursor:pointer;margin-left:10px;font-weight:600;">
+        ⚙ Kết nối GSheets
+      </button>
+      <button onclick="document.getElementById('conn-banner').remove()"
+        style="background:none;border:none;color:rgba(255,255,255,.7);
+               cursor:pointer;margin-left:8px;font-size:18px;line-height:1;">✕</button>`;
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:1000;'+
+      'background:#D97706;color:#fff;padding:7px 20px;font-size:12px;'+
+      'display:flex;align-items:center;justify-content:center;gap:4px;';
+  } else {
+    b.innerHTML = `
+      <span style="color:#fff;">✅ Đã kết nối Google Sheets</span>
+      <button onclick="disconnectGSheets()"
+        style="background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);
+               color:#fff;padding:3px 12px;border-radius:99px;font-size:11px;
+               cursor:pointer;margin-left:10px;">Ngắt kết nối</button>`;
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:1000;'+
+      'background:#16A34A;color:#fff;padding:7px 20px;font-size:12px;'+
+      'display:flex;align-items:center;justify-content:center;gap:4px;';
+    // Tự ẩn sau 3 giây khi đã kết nối
+    setTimeout(()=>{ if(b.parentNode) b.remove(); }, 3000);
   }
+  document.body.prepend(b);
+  document.getElementById('app').style.paddingTop = '36px';
 }
 
-function openGSheetsSetup(){
-  const url = prompt('Dán Google Apps Script Web App URL vào đây:','');
-  if(url && url.startsWith('https://')){
-    APPS_SCRIPT_URL_RUNTIME = url;
-    API_MODE = 'live';
-    localStorage.setItem('ab_script_url', url);
-    document.getElementById('conn-banner')?.remove();
-    document.getElementById('app').style.paddingTop='';
-    showToast('✅ Đã kết nối GSheets! Đang tải lại dữ liệu...','success');
-    setTimeout(()=>location.reload(),1200);
+function showConnectModal(){
+  document.getElementById('m-connect').classList.add('open');
+}
+function disconnectGSheets(){
+  localStorage.removeItem('ab_script_url');
+  localStorage.removeItem('ab_token');
+  AUTH_TOKEN = '';
+  API_MODE   = 'demo';
+  showToast('🔌 Đã ngắt kết nối GSheets. Chạy chế độ Demo.','warn');
+  renderConnectionBanner();
+}
+
+async function confirmConnect(){
+  const url = document.getElementById('gs-url-input').value.trim();
+  if(!url || !url.includes('script.google.com')){
+    showToast('⚠ URL không hợp lệ — phải là URL từ script.google.com','error'); return;
+  }
+  const btn = document.getElementById('btn-confirm-connect');
+  btn.textContent = '⏳ Đang kiểm tra...'; btn.disabled = true;
+  // Health check
+  try {
+    const testUrl = url + '?action=healthCheck';
+    const res = await fetch(testUrl);
+    const data = await res.json();
+    if(data.ts || data.ok !== false){
+      setScriptUrl(url);
+      AUTH_TOKEN = '';
+      localStorage.removeItem('ab_token');
+      API_MODE   = 'live';
+      closeModal('m-connect');
+      showToast('✅ Kết nối thành công! Vui lòng đăng nhập lại.','success');
+      renderConnectionBanner();
+      // Go back to login
+      setTimeout(()=>{
+        document.getElementById('app').style.display='none';
+        document.getElementById('login-screen').style.display='flex';
+      }, 1000);
+    } else {
+      showToast('❌ Server phản hồi lỗi: '+(data.error||'unknown'),'error');
+    }
+  } catch(err){
+    showToast('❌ Không thể kết nối: '+err.message,'error');
+  }
+  btn.textContent = 'Xác nhận kết nối'; btn.disabled = false;
+}
+
+async function runSetupSheets(){
+  if(API_MODE==='demo'){
+    showToast('⚠ Cần kết nối GSheets trước khi khởi tạo','warn');
+    return;
+  }
+  const btn = document.getElementById('btn-setup-sheets');
+  const resultEl = document.getElementById('setup-result');
+  if(btn){ btn.textContent='⏳ Đang khởi tạo...'; btn.disabled=true; }
+  if(resultEl) resultEl.style.display='none';
+  const res = await api('setupSheets');
+  if(btn){ btn.textContent='🗄 Khởi tạo Sheets ngay'; btn.disabled=false; }
+  if(res?.ok){
+    showToast('✅ Khởi tạo thành công!','success');
+    if(resultEl){
+      resultEl.style.display='block';
+      resultEl.innerHTML=`<div style="padding:12px;background:var(--green-50);border:1px solid #bbf7d0;border-radius:var(--r);font-size:12px;color:#166534;">
+        <strong>✅ ${res.message||'Hoàn thành!'}</strong>
+        ${res.url?`<br/><a href="${res.url}" target="_blank" style="color:var(--blue-600);text-decoration:underline;font-size:11px;display:inline-block;margin-top:4px;">📊 Mở Google Sheets →</a>`:''}
+      </div>`;
+    }
+  } else {
+    showToast('❌ '+(res?.error||'Lỗi setup'),'error');
+    if(resultEl){
+      resultEl.style.display='block';
+      resultEl.innerHTML=`<div style="padding:12px;background:var(--red-50);border:1px solid #fecaca;border-radius:var(--r);font-size:12px;color:var(--red-600);">❌ ${res?.error||'Lỗi không xác định'}</div>`;
+    }
   }
 }
-let APPS_SCRIPT_URL_RUNTIME = localStorage.getItem('ab_script_url') || APPS_SCRIPT_URL;
 
 /* ─── Setup Sheet helper (chạy 1 lần) ─────────── */
 async function runSetupSheets(){
@@ -1263,6 +1372,17 @@ async function doLogin(){
   const password = document.getElementById('li-pass').value.trim();
   const roleDemo = document.getElementById('li-role').value; // demo only
 
+  // Update GSheets status indicator on login screen
+  const statusEl = document.getElementById('login-gs-status');
+  if(statusEl){
+    if(API_MODE==='live'){
+      statusEl.style.background='var(--green-50)';statusEl.style.color='var(--green-600)';statusEl.style.border='1px solid #bbf7d0';
+      statusEl.textContent='✅ Đã kết nối GSheets — đăng nhập với tài khoản thực';
+    } else {
+      statusEl.style.background='var(--amber-50)';statusEl.style.color='#92400e';statusEl.style.border='1px solid #fde68a';
+      statusEl.textContent='⚡ Chế độ Demo — dữ liệu lưu tạm trong trình duyệt';
+    }
+  }
   // Show loading
   const btn = document.querySelector('.btn-login');
   btn.textContent = '⏳ Đang đăng nhập...'; btn.disabled = true;
@@ -1270,20 +1390,27 @@ async function doLogin(){
   let loginUser = null;
 
   if(API_MODE === 'live'){
-    // Real GSheets login
+    // Đăng nhập thực qua GSheets
     const res = await api('login', {username, password});
     if(!res || !res.ok){
       btn.textContent='Đăng nhập vào hệ thống →'; btn.disabled=false;
-      showToast('❌ ' + (res?.error||'Lỗi đăng nhập'),'error');
+      showToast('❌ ' + (res?.error||'Lỗi đăng nhập — kiểm tra lại URL hoặc tài khoản'),'error');
       return;
     }
     AUTH_TOKEN = res.token;
     localStorage.setItem('ab_token', AUTH_TOKEN);
     loginUser = res.user;
+    loginUser.av = loginUser.avatar || String(loginUser.name||'??').slice(0,2).toUpperCase();
   } else {
-    // Demo mode: use role selector
-    loginUser = {...USERS[roleDemo], username: roleDemo};
-    loginUser.av = loginUser.av || loginUser.name?.slice(0,2).toUpperCase();
+    // Demo mode — đăng nhập ngay không cần server
+    const demoUser = USERS[roleDemo];
+    if(!demoUser){
+      btn.textContent='Đăng nhập vào hệ thống →'; btn.disabled=false;
+      showToast('❌ Không tìm thấy role demo: '+roleDemo,'error');
+      return;
+    }
+    loginUser = {...demoUser, username: roleDemo};
+    loginUser.av = demoUser.av || String(demoUser.name||'').slice(0,2).toUpperCase();
     AUTH_TOKEN = 'demo-' + roleDemo;
   }
 
@@ -1761,7 +1888,15 @@ function renderPerms(){
   ];
   const roleLabel={admin:'Admin',boss:'Boss',manager:'Manager',purchase:'Purchase',user:'User'};
   const roleClass={admin:'pr-admin',boss:'pr-boss',manager:'pr-manager',purchase:'pr-purchase',user:'pr-user'};
-  el.innerHTML=`<div class="card">
+  el.innerHTML=`
+  <div class="section-head" style="margin-bottom:16px;">
+    <h3>🔐 Phân quyền & Cài đặt Hệ thống</h3>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-secondary btn-sm" onclick="showConnectModal()">🔗 Cài đặt GSheets</button>
+      <button class="btn btn-primary btn-sm" onclick="openModal('m-setup')">🗄 Khởi tạo Sheets</button>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:20px;">
     <div class="card-header"><h3>🔐 Ma trận Phân quyền hệ thống</h3><span class="badge badge-blue">Chỉ Admin có thể thay đổi</span></div>
     <div class="card-body">
       ${rows.map(r=>`<div class="perm-row"><span class="perm-name">${r.name}</span><div class="perm-roles">${r.roles.map(rl=>`<span class="perm-role ${roleClass[rl]}">${roleLabel[rl]}</span>`).join('')}</div></div>`).join('')}
@@ -2700,8 +2835,127 @@ const _origGoPageFn = goPage;
 ═══════════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded',()=>{
   updateNotifBadge();
+  // Sync API_MODE với localStorage
+  API_MODE = getScriptUrl() ? 'live' : 'demo';
+  // Show GSheets status on login screen
+  const statusEl = document.getElementById('login-gs-status');
+  if(statusEl){
+    if(API_MODE==='live'){
+      statusEl.style.cssText='background:var(--green-50);color:var(--green-600);border:1px solid #bbf7d0;border-radius:var(--r);padding:8px 12px;';
+      statusEl.textContent='✅ Đã kết nối GSheets — đăng nhập với tài khoản thực';
+    } else {
+      statusEl.style.cssText='background:var(--amber-50);color:#92400e;border:1px solid #fde68a;border-radius:var(--r);padding:8px 12px;';
+      statusEl.textContent='⚡ Chế độ Demo — nhấn nút bên dưới để kết nối GSheets';
+    }
+  }
+  // Auto-restore token from localStorage if live
+  if(API_MODE==='live'){
+    AUTH_TOKEN = localStorage.getItem('ab_token') || '';
+  }
 });
 
 </script>
+
+<!-- MODAL: KẾT NỐI GOOGLE SHEETS -->
+<div class="overlay" id="m-connect" onclick="overlayClick(event,'m-connect')">
+<div class="modal" style="--modal-w:540px">
+  <div class="modal-hd">
+    <div>
+      <h3>🔗 Kết nối Google Sheets</h3>
+      <p>Dán Web App URL từ Google Apps Script để kết nối dữ liệu thực</p>
+    </div>
+    <button class="modal-x" onclick="closeModal('m-connect')">✕</button>
+  </div>
+  <div class="modal-bd">
+    <!-- Step indicator -->
+    <div style="display:flex;gap:0;margin-bottom:20px;">
+      <div style="flex:1;text-align:center;padding:10px;background:var(--blue-50);border-radius:var(--r) 0 0 var(--r);border:1px solid var(--blue-200);">
+        <div style="font-size:18px;margin-bottom:2px;">1️⃣</div>
+        <div style="font-size:11px;font-weight:600;color:var(--blue-700);">Tạo Spreadsheet</div>
+      </div>
+      <div style="flex:1;text-align:center;padding:10px;background:var(--slate-50);border:1px solid var(--slate-200);border-left:none;">
+        <div style="font-size:18px;margin-bottom:2px;">2️⃣</div>
+        <div style="font-size:11px;font-weight:600;color:var(--slate-600);">Deploy Apps Script</div>
+      </div>
+      <div style="flex:1;text-align:center;padding:10px;background:var(--green-50);border-radius:0 var(--r) var(--r) 0;border:1px solid var(--green-200);border-left:none;">
+        <div style="font-size:18px;margin-bottom:2px;">3️⃣</div>
+        <div style="font-size:11px;font-weight:600;color:var(--green-600);">Dán URL & Kết nối</div>
+      </div>
+    </div>
+
+    <div class="fg">
+      <label>Apps Script Web App URL *</label>
+      <input type="url" id="gs-url-input"
+        placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+        style="font-size:12px;font-family:monospace;"/>
+      <p style="font-size:11px;color:var(--slate-400);margin-top:4px;">
+        Lấy từ: Apps Script → Deploy → Manage deployments → Web App URL
+      </p>
+    </div>
+
+    <div style="background:var(--blue-50);border:1px solid var(--blue-200);border-radius:var(--r);padding:14px;font-size:12px;color:var(--blue-800);">
+      <div style="font-weight:700;margin-bottom:8px;">📋 Checklist trước khi kết nối:</div>
+      <div style="display:flex;flex-direction:column;gap:5px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+          <input type="checkbox" id="chk1"/> Đã tạo Google Spreadsheet và copy ID
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+          <input type="checkbox" id="chk2"/> Đã dán SS_ID vào Code.gs và Save
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+          <input type="checkbox" id="chk3"/> Deploy: Execute as <strong>Me</strong>, Access: <strong>Anyone</strong>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+          <input type="checkbox" id="chk4"/> Đã chạy hàm <code style="background:#dbeafe;padding:1px 5px;border-radius:3px">setupSheets()</code> để tạo sheet & tài khoản
+        </label>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;padding:12px;background:var(--amber-50);border:1px solid #fde68a;border-radius:var(--r);font-size:11px;color:#92400e;">
+      <strong>⚠ Lưu ý CORS:</strong> Apps Script chỉ hoạt động với GET request.
+      File Code.gs đã được cấu hình đúng — chỉ cần deploy với
+      <strong>Execute as: Me</strong> và <strong>Who has access: Anyone</strong>.
+    </div>
+  </div>
+  <div class="modal-ft">
+    <button class="btn btn-secondary" onclick="closeModal('m-connect')">Bỏ qua (dùng Demo)</button>
+    <button class="btn btn-primary" id="btn-confirm-connect" onclick="confirmConnect()">
+      🔗 Xác nhận kết nối & Kiểm tra
+    </button>
+  </div>
+</div>
+</div>
+
+<!-- MODAL: SETUP SHEETS (cho Admin) -->
+<div class="overlay" id="m-setup" onclick="overlayClick(event,'m-setup')">
+<div class="modal" style="--modal-w:480px">
+  <div class="modal-hd">
+    <div><h3>🗄 Khởi tạo Google Sheets</h3><p>Tạo tất cả sheet và dữ liệu mẫu tự động</p></div>
+    <button class="modal-x" onclick="closeModal('m-setup')">✕</button>
+  </div>
+  <div class="modal-bd">
+    <div style="padding:16px;background:var(--blue-50);border-radius:var(--r);margin-bottom:16px;">
+      <div style="font-size:13px;font-weight:600;color:var(--blue-800);margin-bottom:8px;">Sẽ tạo 11 sheet:</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;color:var(--blue-700);">
+        <span>✓ Users</span><span>✓ PurchaseRequests</span>
+        <span>✓ PRItems</span><span>✓ PurchaseOrders</span>
+        <span>✓ POItems</span><span>✓ Suppliers</span>
+        <span>✓ Catalog</span><span>✓ Invoices</span>
+        <span>✓ Inventory</span><span>✓ Quotations</span>
+        <span>✓ AuditLog</span><span></span>
+      </div>
+    </div>
+    <div style="padding:12px;background:var(--green-50);border:1px solid #bbf7d0;border-radius:var(--r);font-size:12px;color:#166534;">
+      <strong>✅ Tài khoản mặc định sẽ được tạo:</strong><br/>
+      admin/Admin@2024 · boss/Boss@2024 · manager/Manager@2024 · purchase/Purchase@2024 · user/User@2024
+    </div>
+    <div id="setup-result" style="margin-top:12px;display:none;"></div>
+  </div>
+  <div class="modal-ft">
+    <button class="btn btn-secondary" onclick="closeModal('m-setup')">Đóng</button>
+    <button class="btn btn-primary" id="btn-setup-sheets" onclick="runSetupSheets()">🗄 Khởi tạo Sheets ngay</button>
+  </div>
+</div>
+</div>
 </body>
 </html>
