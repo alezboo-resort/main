@@ -1000,6 +1000,22 @@ tr.overdue-row td{background:var(--red-50)!important;}
 /* ═══════════════════════════════════════════════
    ★ GOOGLE SHEETS CONFIG — ĐIỀN VÀO ĐÂY ★
 ═══════════════════════════════════════════════ */
+// Global error handler — hiển thị lỗi JS thay vì im lặng
+window.onerror = function(msg, src, line, col, err){
+  const toast = document.getElementById('toast-wrap');
+  if(toast){
+    const t=document.createElement('div');
+    t.className='toast error';
+    t.textContent='JS Error: '+msg+' (line '+line+')';
+    toast.appendChild(t);
+    setTimeout(()=>t.remove(),6000);
+  }
+  console.error('JS Error:', msg, 'line:', line, err);
+  return false;
+};
+window.onunhandledrejection = function(e){
+  console.error('Unhandled Promise rejection:', e.reason);
+};
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyCp53BXdb655O3G3frrox1lqKAi7Y2WnkLAJ7G1HPueJ2fhxFaXXs_5kBloyVWDaMJ/exec'; // ← Dán Web App URL sau khi deploy
 
 /* ═══════════════════════════════════════════════
@@ -1032,29 +1048,33 @@ async function api(action, body={}, method='POST') {
 
 // Demo fallback: trả về dữ liệu local khi chưa có GSheets
 function demoFallback(action, body) {
+  // NOTE: all cases use blocks {} to avoid const/let scoping errors in switch
   switch(action) {
-    case 'login':
+    case 'login': {
       const u = USERS[body.username];
       if (u && body.password) return Promise.resolve({ok:true, token:'demo-token', user:{...u, username:body.username}});
       return Promise.resolve({ok:false, error:'Sai tài khoản hoặc mật khẩu'});
-    case 'getPRList':   return Promise.resolve({ok:true, data: PR_DATA});
-    case 'getPOList':   return Promise.resolve({ok:true, data: PO_DATA});
-    case 'getSuppliers':return Promise.resolve({ok:true, data: SUPPLIERS});
-    case 'getCatalog':  return Promise.resolve({ok:true, data: CATALOG});
-    case 'getInvoices': return Promise.resolve({ok:true, data: INVOICE_DATA});
-    case 'getInventory':return Promise.resolve({ok:true, data: INVENTORY_DATA});
-    case 'getUsers':    return Promise.resolve({ok:true, data: USER_DATA});
+    }
+    case 'getPRList':    return Promise.resolve({ok:true, data: PR_DATA});
+    case 'getPOList':    return Promise.resolve({ok:true, data: PO_DATA});
+    case 'getSuppliers': return Promise.resolve({ok:true, data: SUPPLIERS});
+    case 'getCatalog':   return Promise.resolve({ok:true, data: CATALOG});
+    case 'getInvoices':  return Promise.resolve({ok:true, data: INVOICE_DATA});
+    case 'getInventory': return Promise.resolve({ok:true, data: INVENTORY_DATA});
+    case 'getUsers':     return Promise.resolve({ok:true, data: USER_DATA});
     case 'getQuotations':return Promise.resolve({ok:true, data: QUOTATION_DATA});
     case 'updatePRStatus': {
       const p = PR_DATA.find(x=>x.id===body.id);
-      if(p){p.status=body.status;buildKanban();buildPRTable();}
+      if(p){p.status=body.status;}
       return Promise.resolve({ok:true});
     }
     case 'createPR': {
-      const id='PR-0'+prCounter++;
-      const pr={id,...body,date:new Date().toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'}),user:currentUser.av,items:body.items||[]};
-      PR_DATA.unshift(pr);buildKanban();buildPRTable();
-      return Promise.resolve({ok:true, data:{id}});
+      const newId='PR-0'+prCounter++;
+      const newPR={id:newId,...body,
+        date:new Date().toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'}),
+        user:(currentUser&&currentUser.av)||'??',items:body.items||[]};
+      PR_DATA.unshift(newPR);
+      return Promise.resolve({ok:true, data:{id:newId}});
     }
     case 'updateInvoice': {
       const inv=INVOICE_DATA.find(i=>i.id===body.id);
@@ -1062,31 +1082,38 @@ function demoFallback(action, body) {
       return Promise.resolve({ok:true});
     }
     case 'createSupplier': {
-      const sup={code:'NCC-'+String(SUPPLIERS.length+1).padStart(3,'0'),...body,status:'active'};
-      SUPPLIERS.push(sup);buildSupplierTable();populateSupplierDropdowns();
-      return Promise.resolve({ok:true, data:sup});
+      const newSup={code:'NCC-'+String(SUPPLIERS.length+1).padStart(3,'0'),...body,status:'active'};
+      SUPPLIERS.push(newSup);
+      return Promise.resolve({ok:true, data:newSup});
     }
     case 'createItem': {
       CATALOG.push({...body,status:body.status||'active'});
       return Promise.resolve({ok:true});
     }
     case 'createUser': {
-      const nu={id:'USR-'+String(USER_DATA.length+1).padStart(3,'0'),...body};
-      USER_DATA.push(nu);
-      return Promise.resolve({ok:true, data:nu});
+      const newU={id:'USR-'+String(USER_DATA.length+1).padStart(3,'0'),...body};
+      USER_DATA.push(newU);
+      return Promise.resolve({ok:true, data:newU});
     }
     case 'createRFQ': {
-      const rfq={id:'RFQ-00'+rfqCounter++,...body,status:'open',responses:[]};
-      QUOTATION_DATA.unshift(rfq);
-      return Promise.resolve({ok:true, data:{id:rfq.id}});
+      const newRFQ={id:'RFQ-00'+rfqCounter++,...body,status:'open',responses:[]};
+      QUOTATION_DATA.unshift(newRFQ);
+      return Promise.resolve({ok:true, data:{id:newRFQ.id}});
     }
     case 'getReport': {
-      const totalPRValue=PR_DATA.reduce((s,p)=>s+p.total,0);
-      const totalPOValue=PO_DATA.reduce((s,p)=>s+p.total,0);
-      const totalPaid=INVOICE_DATA.filter(i=>i.status==='paid').reduce((s,i)=>s+i.totalWithVat,0);
-      return Promise.resolve({ok:true, data:{totalPRValue,totalPOValue,totalPaid,prCount:PR_DATA.length,poCount:PO_DATA.length}});
+      const tPR=PR_DATA.reduce((s,p)=>s+(p.total||0),0);
+      const tPO=PO_DATA.reduce((s,p)=>s+(p.total||0),0);
+      const tPaid=INVOICE_DATA.filter(i=>i.status==='paid').reduce((s,i)=>s+(i.totalWithVat||0),0);
+      return Promise.resolve({ok:true, data:{totalPRValue:tPR,totalPOValue:tPO,totalPaid:tPaid,prCount:PR_DATA.length,poCount:PO_DATA.length}});
     }
-    default: return Promise.resolve({ok:false, error:'Demo: action not handled: '+action});
+    case 'setupSheets':  return Promise.resolve({ok:true, message:'Demo mode — không cần setup GSheets'});
+    case 'updatePOStatus':
+    case 'updateSupplier':
+    case 'updateItem':
+    case 'deleteItem':
+    case 'deletePR':
+    case 'createGRN':    return Promise.resolve({ok:true});
+    default:             return Promise.resolve({ok:false, error:'Demo: action not handled: '+action});
   }
 }
 
@@ -1377,15 +1404,20 @@ function makeKCard(pr){
   d.addEventListener('click',()=>showToast(`📋 ${pr.id} — ${pr.title} (${fmtMoney(pr.total)})`,'info'));
   return d;
 }
-function dropCard(e,col){
+async function dropCard(e,col){
   e.preventDefault();
   if(!dragId) return;
   const pr=PR_DATA.find(p=>p.id===dragId); if(!pr) return;
   if(pr.status===col) return;
   if(!canMove(currentUser.role,pr.status,col)){showToast('⛔ Bạn không có quyền thực hiện thao tác này','error');return;}
-  pr.status=col;
-  buildKanban();
-  showToast(`✅ Đã chuyển ${pr.id} → ${colLabel(col)}`,'success');
+  const res=await api('updatePRStatus',{id:pr.id,status:col});
+  if(res?.ok){
+    pr.status=col;
+    buildKanban();
+    showToast(`✅ Đã chuyển ${pr.id} → ${colLabel(col)}`,'success');
+  } else {
+    showToast('❌ '+(res?.error||'Lỗi cập nhật trạng thái'),'error');
+  }
   dragId=null;
 }
 function canMove(role,from,to){
@@ -2455,13 +2487,23 @@ function showPRDetail(id){
   openModal('m-pr-detail');
 }
 
-function submitPRById(id){
-  const p=PR_DATA.find(x=>x.id===id);
-  if(p){p.status='pending';buildKanban();buildPRTable();closeModal('m-pr-detail');showToast(`✅ Đã gửi ${id} để phê duyệt`,'success');}
+async function submitPRById(id){
+  const res=await api('updatePRStatus',{id,status:'pending'});
+  if(res?.ok){
+    const p=PR_DATA.find(x=>x.id===id);
+    if(p){p.status='pending';}
+    buildKanban();buildPRTable();closeModal('m-pr-detail');
+    showToast(`✅ Đã gửi ${id} để phê duyệt`,'success');
+  } else showToast('❌ '+(res?.error||'Lỗi'),'error');
 }
-function finalApprovePR(id){
-  const p=PR_DATA.find(x=>x.id===id);
-  if(p){p.status='received';buildKanban();buildPRTable();showToast(`🏆 Boss đã phê duyệt ${id}`,'success');}
+async function finalApprovePR(id){
+  const res=await api('updatePRStatus',{id,status:'done'});
+  if(res?.ok){
+    const p=PR_DATA.find(x=>x.id===id);
+    if(p){p.status='done';}
+    buildKanban();buildPRTable();
+    showToast(`🏆 Boss đã phê duyệt cuối ${id}`,'success');
+  } else showToast('❌ '+(res?.error||'Lỗi'),'error');
 }
 function printPO(id){
   showToast('🖨 Chức năng in PO — sẽ kết nối Google Sheets để lấy dữ liệu thực','info');
@@ -2607,19 +2649,24 @@ const _origPages = PAGES;
 PAGES.push('quotation');
 const _origGoPageFn = goPage;
 // Patch: handle quotation in goPage
+// Patch goPage to handle quotation page
 (function(){
-  const origGoPage=goPage;
+  const origGoPage=window.goPage||goPage;
   window.goPage=function(page,btn){
     if(page==='quotation'){
-      _origPages.concat(['quotation']).forEach(p=>{const el=document.getElementById('page-'+p);if(el)el.style.display='none';});
+      const allPages=['dashboard','pr','po','supplier','inventory','invoice','catalog','report','users','perms','quotation'];
+      allPages.forEach(p=>{const el=document.getElementById('page-'+p);if(el)el.style.display='none';});
       document.querySelectorAll('.sb-item').forEach(b=>b.classList.remove('active'));
       if(btn)btn.classList.add('active');
       const pg=document.getElementById('page-quotation');
       if(pg){pg.style.display='';}
-      document.getElementById('page-title').textContent='Báo giá & So sánh';
+      const pt=document.getElementById('page-title');
+      if(pt)pt.textContent='Báo giá & So sánh';
       renderQuotation();
-      document.getElementById('btn-new-pr').style.display='none';
-      document.getElementById('btn-new-item').style.display='none';
+      const bp=document.getElementById('btn-new-pr');
+      const bi=document.getElementById('btn-new-item');
+      if(bp)bp.style.display='none';
+      if(bi)bi.style.display='none';
       return;
     }
     origGoPage(page,btn);
@@ -2629,22 +2676,24 @@ const _origGoPageFn = goPage;
 /* ═══════════════════════════════════════════════
    PATCH PR TABLE — add detail button
 ═══════════════════════════════════════════════ */
-const _origBuildPRTable=buildPRTable;
-window.buildPRTable=function(filter,statusFilter){
-  _origBuildPRTable(filter,statusFilter);
-  // Replace all "👁 Xem" buttons with detail modal openers
-  document.querySelectorAll('#pr-tbody tr').forEach(tr=>{
-    const idEl=tr.querySelector('strong');
-    if(!idEl) return;
-    const id=idEl.textContent;
-    const viewBtns=tr.querySelectorAll('.btn-xs');
-    viewBtns.forEach(btn=>{
-      if(btn.textContent.includes('Xem')){
-        btn.onclick=()=>showPRDetail(id);
-      }
+// Patch buildPRTable to wire detail modal - safe wrapper
+(function(){
+  const _orig = typeof buildPRTable==='function' ? buildPRTable : null;
+  if(!_orig) return;
+  window.buildPRTable = function(filter, statusFilter){
+    _orig(filter, statusFilter);
+    document.querySelectorAll('#pr-tbody tr').forEach(tr=>{
+      const idEl = tr.querySelector('strong');
+      if(!idEl) return;
+      const rowId = idEl.textContent.trim();
+      tr.querySelectorAll('.btn-xs').forEach(btn=>{
+        if(btn.textContent.includes('Xem')){
+          btn.onclick = (e)=>{ e.stopPropagation(); showPRDetail(rowId); };
+        }
+      });
     });
-  });
-};
+  };
+})();
 
 /* ═══════════════════════════════════════════════
    INIT NOTIF BADGE ON LOAD
